@@ -1,0 +1,98 @@
+#!/bin/bash
+#
+# Copyright (c) 2017, Cisco Systems
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without modification,
+# are permitted provided that the following conditions are met:
+#
+# * Redistributions of source code must retain the above copyright notice, this
+#   list of conditions and the following disclaimer.
+#
+# * Redistributions in binary form must reproduce the above copyright notice, this
+#   list of conditions and the following disclaimer in the documentation and/or
+#   other materials provided with the distribution.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+# ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+# WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+# ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+# (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+# LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+# ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+# SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+source "/usr/lib/arc/arc.sh"
+
+declare domains=""
+
+function parse_args() {
+  if [[ $# -lt 1 ]]; then
+    die "domain(s) expected"
+  fi
+  domains="$@"
+}
+
+function create_dhclient_conf() {
+  cat > /etc/dhcp/dhclient.conf << EOF
+timeout 300;
+retry 60;
+supersede domain-search $1;
+EOF
+}
+
+function setup_dhcp() {
+  local dhcp="/etc/dhcp/dhclient.conf"
+
+  if [[ "$ID" == "centos" && "$VERSION_ID" == "6" ]]; then
+    dhcp="/etc/dhcp/dhclient-eth0.conf"
+  elif [[ "$ID" == "redhat" ]]; then
+    dhcp="/etc/dhcp/dhclient-eth0.conf"
+    touch "${dhcp}"
+  fi
+
+  local d
+  local dhcp_domains=""
+  for d in $domains; do
+    if [[ -z $dhcp_domains ]]; then
+      dhcp_domains="\"$d\""
+    else
+      dhcp_domains="${dhcp_domains}, \"$d\""
+    fi
+  done
+
+  if [[ ! -f $dhcp ]]; then
+    create_dhclient_conf "$dhcp_domains"
+  elif egrep "^supersede domain-search .*" $dhcp >/dev/null 2>&1; then
+    sed -i'.orig' "s/^supersede domain-search .*/supersede domain-search ${dhcp_domains};/" $dhcp
+  else
+    echo "supersede domain-search ${dhcp_domains};" >> $dhcp
+  fi
+
+  if [[ "$ID" == "centos" || "$ID" == "redhat" ]]; then
+    if [[ $VERSION_ID > 6 ]]; then
+      /usr/bin/systemctl restart network.service
+    else
+      service network restart
+    fi
+  else
+    MAJOR_VERSION=$(echo $VERSION_ID | tr "." "\n" | head -n 1)
+    if [[ $ID = "ubuntu" && $MAJOR_VERSION == "16" ]]; then
+      ifdown ens3 && ifup ens3
+    else 
+      ifdown eth0 && ifup eth0
+    fi
+  fi
+}
+
+function main() {
+  parse_args "$@"
+  if ! setup_dhcp; then
+    die "Failed to setup dhcp"
+  fi
+  return 0
+}
+
+main "$@"

@@ -1,0 +1,92 @@
+#!/bin/bash
+#
+# Copyright (c) 2017, Cisco Systems
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without modification,
+# are permitted provided that the following conditions are met:
+#
+# * Redistributions of source code must retain the above copyright notice, this
+#   list of conditions and the following disclaimer.
+#
+# * Redistributions in binary form must reproduce the above copyright notice, this
+#   list of conditions and the following disclaimer in the documentation and/or
+#   other materials provided with the distribution.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+# ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+# WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+# ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+# (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+# LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+# ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+# SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+source "/usr/lib/arc/arc.sh"
+
+# Centos7 runs a systemd-hostnamed service to automatically update hostname.
+# The value it gets is from the DC, if available (e.g. AWS defines a private
+# DNS for each instance on creation). This can happen before or at the same
+# time as we run this script, so, we delay here a bit to let that service
+# run and then we continue defining our own hostname.
+#
+# TODO: Figure out a better way here if possible.
+if [[ "$ID" = "centos" && "$VERSION_ID" = "7" ]]; then
+  sleep 15
+fi
+
+declare fqdn=""
+
+function parse_args() {
+  if [[ $# -ne 1 ]]; then
+    die "fqdn expected"
+  fi
+  fqdn="$1"
+}
+
+function setup_runtime() {
+  hostname $fqdn
+}
+
+function setup_etc_hostname() {
+  local etc_hostname="/etc/hostname"
+  if [[ -f /etc/hostname ]]; then
+    echo "$fqdn" > $etc_hostname
+  fi
+}
+
+function setup_cloud_cfg() {
+  local dir="/etc/cloud/cloud.cfg.d"
+  if [[ -d "$dir" ]]; then
+    echo "hostname: $fqdn" > "$dir/hostname.cfg"
+  fi
+}
+
+function setup_network() {
+  if [[ "$ID" != "centos" ]]; then
+    return
+  fi
+  local network="/etc/sysconfig/network"
+  if egrep "^HOSTNAME=" $network >/dev/null  2>&1; then
+    sed -i'.orig' "s/^HOSTNAME=.*\$/HOSTNAME=$fqdn/" $network
+  else
+    echo "HOSTNAME=$fqdn" >> $network
+  fi
+}
+
+function main() {
+  parse_args "$@"
+  if ! setup_runtime; then
+    die "Failed to setup runtime hostname"
+  fi
+  setup_etc_hostname
+  setup_cloud_cfg
+  if ! setup_network; then
+    die "Failed to setup /etc/sysconfig/network"
+  fi
+  return 0
+}
+
+main "$@"

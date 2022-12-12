@@ -1,0 +1,122 @@
+#!/bin/bash
+#
+# Copyright (c) 2017, Cisco Systems
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without modification,
+# are permitted provided that the following conditions are met:
+#
+# * Redistributions of source code must retain the above copyright notice, this
+#   list of conditions and the following disclaimer.
+#
+# * Redistributions in binary form must reproduce the above copyright notice, this
+#   list of conditions and the following disclaimer in the documentation and/or
+#   other materials provided with the distribution.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+# ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+# WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+# ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+# (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+# LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+# ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+# SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+source "/usr/lib/arc/arc.sh"
+source "/etc/profile.d/vault.sh"
+
+export PATH=$PATH:/usr/local/sbin
+
+declare -r paging_cmd='/usr/local/bin/manage_consul_paging'
+
+declare action
+declare server
+declare silence_url
+
+function parse_args() {
+  if [ "$#" -ne 2 ]; then
+    die "Expected arguments: (enable|disable) server"
+  fi
+  action="$1"
+  server="$2"
+  silence_url="silence/${server}"
+
+  verify_consul_agent
+}
+
+function verify_consul_agent() {
+  local r
+  for (( i=0; i<6; i++ )); do
+    r=$(consul info 2>&1)
+    if [ $? -eq $success ]; then
+      return
+    fi
+    if echo ${r} | grep "command not found"; then
+      die "Consul agent command not found on server"
+    fi
+    sleep 5
+  done
+  if echo ${r} | grep "connection refused"; then
+    die "Consul agent unable to connect to server"
+  fi
+  die "Consul agent failing ${r}"
+}
+
+function consul_paging() {
+  local r=$(consul kv get "${silence_url}" 2>&1)
+  local rc=$?
+  if [ -z "$r" ]; then
+    return $failure
+  fi
+  if echo ${r} | grep "No key exists"; then
+    return $success
+  fi
+  if echo ${r} | grep "connection refused"; then
+    die "Consul agent unable to connect to server"
+  fi
+  if [ $rc -ne $success ]; then
+    die "Consul agent failure: $r"
+  fi
+  return $success
+}
+
+function enable_paging() {
+  if consul_paging; then
+    return
+  fi
+
+  if ! $paging_cmd -t node -s disable -v ${server}; then
+    die "Could not disable consul alert blacklisting for ${server}"
+  fi
+  consul kv delete "${silence_url}"
+  if ! consul_paging; then
+    die "Could not enable paging for ${server}"
+  fi
+}
+
+function disable_paging() {
+  if ! consul_paging; then
+    return
+  fi
+
+  if ! $paging_cmd -t node -s enable -v ${server}; then
+    die "Could not enable consul alert blacklisting for ${server}"
+  fi
+  consul kv put "${silence_url}"
+  if consul_paging; then
+    die "Could not disable paging for ${server}"
+  fi
+}
+
+function main() {
+  parse_args "$@"
+  case $action in
+    "enable") enable_paging ;;
+    "disable") disable_paging ;;
+    *) die "Unknown action: ${action}" ;;
+  esac
+}
+
+main "$@"
